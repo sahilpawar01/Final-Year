@@ -157,10 +157,14 @@ def patch_layer_from_config():
                     @classmethod
                     def patched_from_config(cls, *args, **kwargs):
                         # Handle any call signature - extract config from args or kwargs
-                        if args:
-                            config = args[0] if len(args) > 0 else kwargs.get('config', {})
+                        # Keras may call as: from_config(config) or from_config(config, custom_objects=...)
+                        if len(args) > 0:
+                            config = args[0]
+                        elif 'config' in kwargs:
+                            config = kwargs['config']
                         else:
-                            config = kwargs.get('config', {})
+                            # Fallback - try to get from first positional arg
+                            config = args[0] if args else {}
                         
                         # Fix the config before deserialization
                         if isinstance(config, dict):
@@ -169,7 +173,12 @@ def patch_layer_from_config():
                         # In TF 2.11, from_config only accepts (cls, config)
                         # custom_objects is handled at a higher level in load_model
                         # Call the original function with only cls and config
-                        return original_func(cls, config)
+                        try:
+                            return original_func(cls, config)
+                        except TypeError as te:
+                            # If that fails, try without cls (some versions might bind it differently)
+                            print(f"Warning: from_config call failed with cls, trying without: {te}", file=sys.stderr)
+                            return original_func(config)
                     
                     Layer.from_config = patched_from_config
                     print(f"Successfully patched Layer.from_config in {module_path}", file=sys.stderr)
@@ -181,6 +190,40 @@ def patch_layer_from_config():
 
 # Apply the patch BEFORE any model loading
 patch_layer_from_config()
+
+# Also patch deserialization functions that might call from_config
+def patch_deserialization_functions():
+    """Patch deserialization functions to handle config fixes"""
+    deserialization_modules = [
+        'tensorflow.python.keras.saving.model_config',
+        'keras.src.saving.saving_lib',
+        'tensorflow.keras.utils',
+    ]
+    
+    for module_path in deserialization_modules:
+        try:
+            module = importlib.import_module(module_path)
+            # Patch model_from_config if it exists
+            if hasattr(module, 'model_from_config'):
+                original_model_from_config = module.model_from_config
+                def patched_model_from_config(config, custom_objects=None):
+                    # Fix any layer configs in the model config
+                    if isinstance(config, dict) and 'config' in config:
+                        model_config = config.get('config', {})
+                        if 'layers' in model_config:
+                            for layer_config in model_config['layers']:
+                                if isinstance(layer_config, dict) and 'config' in layer_config:
+                                    layer_config['config'] = fix_layer_config(layer_config['config'])
+                    return original_model_from_config(config, custom_objects)
+                module.model_from_config = patched_model_from_config
+                print(f"Patched model_from_config in {module_path}", file=sys.stderr)
+        except (ImportError, AttributeError):
+            continue
+        except Exception as e:
+            print(f"Error patching {module_path}: {e}", file=sys.stderr)
+            continue
+
+patch_deserialization_functions()
 
 # Create a proper DTypePolicy class for deserialization
 class DTypePolicyCompat:
@@ -203,29 +246,38 @@ custom_objects = {
     'DTypePolicy': DTypePolicyCompat,
 }
 
-# Try loading the model with compatibility layers using custom_object_scope
+# Try loading the model with compatibility layers
+print("Starting model loading process...", file=sys.stderr)
 try:
+    print("Attempting to load model with custom_object_scope...", file=sys.stderr)
     with custom_object_scope(custom_objects):
         model = load_model(MODEL_FILENAME, compile=False)
+    print("✓ Model loaded successfully with custom_object_scope!", file=sys.stderr)
 except Exception as e:
-    print(f"Model load with custom_object_scope failed: {e}", file=sys.stderr)
+    print(f"✗ Model load with custom_object_scope failed: {e}", file=sys.stderr)
+    print(f"  Error type: {type(e).__name__}", file=sys.stderr)
+    import traceback
+    print(f"  Traceback: {traceback.format_exc()}", file=sys.stderr)
+    
     # Fallback: try with custom_objects parameter
     try:
+        print("Attempting to load model with custom_objects parameter...", file=sys.stderr)
         model = load_model(MODEL_FILENAME, compile=False, custom_objects=custom_objects)
+        print("✓ Model loaded successfully with custom_objects parameter!", file=sys.stderr)
     except Exception as e2:
-        print(f"Model load with custom_objects parameter failed: {e2}", file=sys.stderr)
-        # Last resort: try using h5py to manually fix and reload
-        try:
-            import h5py
-            # This is a complex workaround - for now, just raise with helpful message
-            raise RuntimeError(
-                f"Model loading failed due to version incompatibility. "
-                f"Please re-save the model using the same TensorFlow version as deployment (2.11.0), "
-                f"or provide the exact TF/Keras versions used during training so we can match them."
-            )
-        except Exception as e3:
-            print(f"All model loading attempts failed: {e3}", file=sys.stderr)
-            raise
+        print(f"✗ Model load with custom_objects parameter failed: {e2}", file=sys.stderr)
+        print(f"  Error type: {type(e2).__name__}", file=sys.stderr)
+        import traceback
+        print(f"  Traceback: {traceback.format_exc()}", file=sys.stderr)
+        
+        # Final error with helpful message
+        raise RuntimeError(
+            f"Model loading failed due to version incompatibility.\n"
+            f"Error 1: {str(e)}\n"
+            f"Error 2: {str(e2)}\n\n"
+            f"Please re-save the model using TensorFlow 2.11.0, "
+            f"or provide the exact TF/Keras versions used during training so we can match them."
+        )
 
 # Load InceptionV3 feature extractor (weights auto-download on first run)
 base_model = InceptionV3(weights="imagenet")
