@@ -5,6 +5,33 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from werkzeug.utils import secure_filename
 import numpy as np
 import pickle
+import importlib
+import types
+
+# Create compatibility shim for old Keras module paths
+# This allows pickle to find the old module paths
+keras_legacy_module = types.ModuleType('keras.src.legacy.preprocessing.text')
+keras_legacy_module_preprocessing = types.ModuleType('keras.src.legacy.preprocessing')
+keras_legacy = types.ModuleType('keras.src.legacy')
+keras_src = types.ModuleType('keras.src')
+keras_module = types.ModuleType('keras')
+
+# Import the actual Tokenizer
+from tensorflow.keras.preprocessing.text import Tokenizer
+
+# Make Tokenizer available through the old paths
+keras_legacy_module.Tokenizer = Tokenizer
+keras_legacy_module_preprocessing.text = keras_legacy_module
+keras_legacy.preprocessing = keras_legacy_module_preprocessing
+keras_src.legacy = keras_legacy
+keras_module.src = keras_src
+
+# Register the shim modules in sys.modules
+sys.modules['keras.src.legacy.preprocessing.text'] = keras_legacy_module
+sys.modules['keras.src.legacy.preprocessing'] = keras_legacy_module_preprocessing
+sys.modules['keras.src.legacy'] = keras_legacy
+sys.modules['keras.src'] = keras_src
+
 from tensorflow.keras.applications.inception_v3 import InceptionV3, preprocess_input
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.models import Model, load_model
@@ -21,13 +48,12 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-# Load tokenizer - handle Keras version compatibility
-# Use latin1 encoding to handle pickle files saved with older Keras versions
+# Load tokenizer - the shim modules should allow pickle to find the old paths
 try:
     with open(TOKENIZER_FILENAME, "rb") as f:
         tokenizer = pickle.load(f, encoding='latin1')
 except TypeError:
-    # If encoding parameter not supported (Python 2 pickle), try without it
+    # If encoding parameter not supported, try without it
     with open(TOKENIZER_FILENAME, "rb") as f:
         tokenizer = pickle.load(f)
 except Exception as e:
