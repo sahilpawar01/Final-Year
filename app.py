@@ -102,7 +102,9 @@ class CompatibleInputLayer(BaseInputLayer):
         super().__init__(input_shape=input_shape, **kwargs)
     
     @classmethod
-    def from_config(cls, config):
+    def from_config(cls, config, custom_objects=None):
+        # Accept custom_objects parameter but don't pass it to parent
+        # TF 2.11's from_config only accepts (cls, config)
         config = fix_layer_config(config)
         return super().from_config(config)
 
@@ -120,37 +122,65 @@ class CompatibleEmbedding(BaseEmbedding):
         super().__init__(dtype=dtype, **kwargs)
     
     @classmethod
-    def from_config(cls, config):
+    def from_config(cls, config, custom_objects=None):
+        # Accept custom_objects parameter but don't pass it to parent
+        # TF 2.11's from_config only accepts (cls, config)
         config = fix_layer_config(config)
         return super().from_config(config)
 
 # Patch the deserialization function to fix configs globally
-# Try different module paths for different TF versions
-try:
-    try:
-        from keras.engine.base_layer import Layer
-    except ImportError:
+# Try different module paths for different TF versions and patch all of them
+def patch_layer_from_config():
+    """Patch Layer.from_config in all possible locations"""
+    layer_modules = [
+        'keras.engine.base_layer',
+        'tensorflow.python.keras.engine.base_layer',
+        'tf_keras.engine.base_layer',
+        'keras.src.engine.base_layer',
+        'tensorflow.keras.engine.base_layer',
+    ]
+    
+    for module_path in layer_modules:
         try:
-            from tensorflow.python.keras.engine.base_layer import Layer
-        except ImportError:
-            from tf_keras.engine.base_layer import Layer
-    
-    # Store the original from_config method (unbound classmethod)
-    original_from_config = Layer.from_config
-    
-    @classmethod
-    def patched_from_config(cls, config, custom_objects=None):
-        # Fix the config before deserialization
-        if isinstance(config, dict):
-            config = fix_layer_config(config)
-        # In TF 2.11, from_config may only accept (cls, config)
-        # custom_objects is handled at a higher level in load_model
-        # So we only pass cls and config to avoid the "takes 2 but 3 given" error
-        return original_from_config(cls, config)
-    
-    Layer.from_config = patched_from_config
-except Exception as e:
-    print(f"Could not patch Layer.from_config: {e}", file=sys.stderr)
+            module = importlib.import_module(module_path)
+            if hasattr(module, 'Layer'):
+                Layer = module.Layer
+                if hasattr(Layer, 'from_config'):
+                    # Get the original method - handle both bound and unbound
+                    original_from_config = Layer.from_config
+                    # Get the underlying function if it's a classmethod descriptor
+                    if hasattr(original_from_config, '__func__'):
+                        original_func = original_from_config.__func__
+                    else:
+                        original_func = original_from_config
+                    
+                    @classmethod
+                    def patched_from_config(cls, *args, **kwargs):
+                        # Handle any call signature - extract config from args or kwargs
+                        if args:
+                            config = args[0] if len(args) > 0 else kwargs.get('config', {})
+                        else:
+                            config = kwargs.get('config', {})
+                        
+                        # Fix the config before deserialization
+                        if isinstance(config, dict):
+                            config = fix_layer_config(config)
+                        
+                        # In TF 2.11, from_config only accepts (cls, config)
+                        # custom_objects is handled at a higher level in load_model
+                        # Call the original function with only cls and config
+                        return original_func(cls, config)
+                    
+                    Layer.from_config = patched_from_config
+                    print(f"Successfully patched Layer.from_config in {module_path}", file=sys.stderr)
+        except (ImportError, AttributeError) as e:
+            continue
+        except Exception as e:
+            print(f"Error patching {module_path}: {e}", file=sys.stderr)
+            continue
+
+# Apply the patch BEFORE any model loading
+patch_layer_from_config()
 
 # Create a proper DTypePolicy class for deserialization
 class DTypePolicyCompat:
