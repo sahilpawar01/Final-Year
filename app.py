@@ -63,10 +63,20 @@ except Exception as e:
 # Load trained caption model with compatibility handling
 # The model was saved with older Keras that used 'batch_shape' instead of 'input_shape'
 from tensorflow.keras.layers import InputLayer as BaseInputLayer, Embedding as BaseEmbedding
+from tensorflow.keras.utils import custom_object_scope
 from tensorflow.keras import backend as K
 
 class CompatibleInputLayer(BaseInputLayer):
     """InputLayer that accepts both batch_shape and input_shape for compatibility"""
+    def __init__(self, input_shape=None, batch_shape=None, **kwargs):
+        # Convert batch_shape to input_shape if provided
+        if batch_shape is not None and input_shape is None:
+            if len(batch_shape) > 1:
+                input_shape = tuple(batch_shape[1:])
+        # Remove batch_shape from kwargs to avoid passing it to parent
+        kwargs.pop('batch_shape', None)
+        super().__init__(input_shape=input_shape, **kwargs)
+    
     @classmethod
     def from_config(cls, config):
         # Convert batch_shape to input_shape if needed (for older Keras models)
@@ -81,6 +91,19 @@ class CompatibleInputLayer(BaseInputLayer):
 
 class CompatibleEmbedding(BaseEmbedding):
     """Embedding layer that handles old dtype policy format"""
+    def __init__(self, dtype=None, **kwargs):
+        # Handle old dtype format - convert DTypePolicy dict to string
+        if isinstance(dtype, dict):
+            dtype_config = dtype
+            if dtype_config.get('class_name') == 'DTypePolicy':
+                # Extract the actual dtype from the policy
+                inner_config = dtype_config.get('config', {})
+                dtype = inner_config.get('name', 'float32')
+            elif 'module' in dtype_config and 'keras' in dtype_config.get('module', ''):
+                # Try to get the dtype value
+                dtype = 'float32'  # Default fallback
+        super().__init__(dtype=dtype, **kwargs)
+    
     @classmethod
     def from_config(cls, config):
         config = config.copy()
@@ -102,23 +125,23 @@ custom_objects = {
     'Embedding': CompatibleEmbedding,
 }
 
-# Try loading the model with compatibility layers
+# Try loading the model with compatibility layers using custom_object_scope
 try:
-    model = load_model(MODEL_FILENAME, compile=False, custom_objects=custom_objects)
-except Exception as e:
-    print(f"Model load with custom objects failed: {e}", file=sys.stderr)
-    # Fallback: try loading weights only using h5py
-    try:
-        import h5py
-        from tensorflow.keras.models import Sequential
-        from tensorflow.keras.layers import Dense, LSTM, Dropout
-        
-        # This is a last resort - we'd need to know the model architecture
-        # For now, just try standard load one more time
+    with custom_object_scope(custom_objects):
         model = load_model(MODEL_FILENAME, compile=False)
+except Exception as e:
+    print(f"Model load with custom_object_scope failed: {e}", file=sys.stderr)
+    # Fallback: try with custom_objects parameter
+    try:
+        model = load_model(MODEL_FILENAME, compile=False, custom_objects=custom_objects)
     except Exception as e2:
-        print(f"All model loading attempts failed: {e2}", file=sys.stderr)
-        raise
+        print(f"Model load with custom_objects parameter failed: {e2}", file=sys.stderr)
+        # Last resort: try without custom objects (will likely fail but worth trying)
+        try:
+            model = load_model(MODEL_FILENAME, compile=False)
+        except Exception as e3:
+            print(f"All model loading attempts failed: {e3}", file=sys.stderr)
+            raise
 
 # Load InceptionV3 feature extractor (weights auto-download on first run)
 base_model = InceptionV3(weights="imagenet")
