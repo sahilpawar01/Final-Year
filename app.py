@@ -125,8 +125,16 @@ class CompatibleEmbedding(BaseEmbedding):
         return super().from_config(config)
 
 # Patch the deserialization function to fix configs globally
+# Try different module paths for different TF versions
 try:
-    from tensorflow.keras.engine.base_layer import Layer
+    try:
+        from keras.engine.base_layer import Layer
+    except ImportError:
+        try:
+            from tensorflow.python.keras.engine.base_layer import Layer
+        except ImportError:
+            from tf_keras.engine.base_layer import Layer
+    
     original_from_config = Layer.from_config
     
     @classmethod
@@ -140,11 +148,25 @@ try:
 except Exception as e:
     print(f"Could not patch Layer.from_config: {e}", file=sys.stderr)
 
+# Create a proper DTypePolicy class for deserialization
+class DTypePolicyCompat:
+    """Compatibility class for DTypePolicy deserialization"""
+    def __init__(self, name='float32', **kwargs):
+        self.name = name
+    
+    @classmethod
+    def from_config(cls, config):
+        if isinstance(config, dict):
+            name = config.get('name', 'float32')
+        else:
+            name = str(config) if config else 'float32'
+        return cls(name=name)
+
 # Custom objects for loading the model
 custom_objects = {
     'InputLayer': CompatibleInputLayer,
     'Embedding': CompatibleEmbedding,
-    'DTypePolicy': lambda **kwargs: 'float32',  # Dummy DTypePolicy handler
+    'DTypePolicy': DTypePolicyCompat,
 }
 
 # Try loading the model with compatibility layers using custom_object_scope
