@@ -1,5 +1,6 @@
 # app.py
 import os
+import sys
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from werkzeug.utils import secure_filename
 import numpy as np
@@ -20,9 +21,18 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-# Load tokenizer
-with open(TOKENIZER_FILENAME, "rb") as f:
-    tokenizer = pickle.load(f)
+# Load tokenizer - handle Keras version compatibility
+# Use latin1 encoding to handle pickle files saved with older Keras versions
+try:
+    with open(TOKENIZER_FILENAME, "rb") as f:
+        tokenizer = pickle.load(f, encoding='latin1')
+except TypeError:
+    # If encoding parameter not supported (Python 2 pickle), try without it
+    with open(TOKENIZER_FILENAME, "rb") as f:
+        tokenizer = pickle.load(f)
+except Exception as e:
+    print(f"Error loading tokenizer: {e}", file=sys.stderr)
+    raise
 
 # Load trained caption model
 model = load_model(MODEL_FILENAME)
