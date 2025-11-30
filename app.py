@@ -135,6 +135,7 @@ try:
         except ImportError:
             from tf_keras.engine.base_layer import Layer
     
+    # Store the original from_config method (unbound classmethod)
     original_from_config = Layer.from_config
     
     @classmethod
@@ -142,7 +143,10 @@ try:
         # Fix the config before deserialization
         if isinstance(config, dict):
             config = fix_layer_config(config)
-        return original_from_config(config, custom_objects)
+        # In TF 2.11, from_config may only accept (cls, config)
+        # custom_objects is handled at a higher level in load_model
+        # So we only pass cls and config to avoid the "takes 2 but 3 given" error
+        return original_from_config(cls, config)
     
     Layer.from_config = patched_from_config
 except Exception as e:
