@@ -62,7 +62,8 @@ except Exception as e:
 
 # Load trained caption model with compatibility handling
 # The model was saved with older Keras that used 'batch_shape' instead of 'input_shape'
-from tensorflow.keras.layers import InputLayer as BaseInputLayer
+from tensorflow.keras.layers import InputLayer as BaseInputLayer, Embedding as BaseEmbedding
+from tensorflow.keras import backend as K
 
 class CompatibleInputLayer(BaseInputLayer):
     """InputLayer that accepts both batch_shape and input_shape for compatibility"""
@@ -78,16 +79,45 @@ class CompatibleInputLayer(BaseInputLayer):
             config.pop('batch_shape', None)
         return super().from_config(config)
 
-# Try loading the model with compatibility layer
+class CompatibleEmbedding(BaseEmbedding):
+    """Embedding layer that handles old dtype policy format"""
+    @classmethod
+    def from_config(cls, config):
+        config = config.copy()
+        # Handle old dtype format - convert DTypePolicy to string
+        if 'dtype' in config and isinstance(config['dtype'], dict):
+            dtype_config = config['dtype']
+            if dtype_config.get('class_name') == 'DTypePolicy':
+                # Extract the actual dtype from the policy
+                inner_config = dtype_config.get('config', {})
+                config['dtype'] = inner_config.get('name', 'float32')
+            elif 'module' in dtype_config and 'keras' in dtype_config.get('module', ''):
+                # Try to get the dtype value
+                config['dtype'] = 'float32'  # Default fallback
+        return super().from_config(config)
+
+# Custom objects for loading the model
+custom_objects = {
+    'InputLayer': CompatibleInputLayer,
+    'Embedding': CompatibleEmbedding,
+}
+
+# Try loading the model with compatibility layers
 try:
-    model = load_model(MODEL_FILENAME, compile=False, custom_objects={'InputLayer': CompatibleInputLayer}, safe_mode=False)
+    model = load_model(MODEL_FILENAME, compile=False, custom_objects=custom_objects)
 except Exception as e:
-    print(f"Model load with custom InputLayer failed: {e}", file=sys.stderr)
-    # Fallback: try without custom objects
+    print(f"Model load with custom objects failed: {e}", file=sys.stderr)
+    # Fallback: try loading weights only using h5py
     try:
-        model = load_model(MODEL_FILENAME, compile=False, safe_mode=False)
+        import h5py
+        from tensorflow.keras.models import Sequential
+        from tensorflow.keras.layers import Dense, LSTM, Dropout
+        
+        # This is a last resort - we'd need to know the model architecture
+        # For now, just try standard load one more time
+        model = load_model(MODEL_FILENAME, compile=False)
     except Exception as e2:
-        print(f"Standard model load also failed: {e2}", file=sys.stderr)
+        print(f"All model loading attempts failed: {e2}", file=sys.stderr)
         raise
 
 # Load InceptionV3 feature extractor (weights auto-download on first run)
