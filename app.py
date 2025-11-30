@@ -60,8 +60,35 @@ except Exception as e:
     print(f"Error loading tokenizer: {e}", file=sys.stderr)
     raise
 
-# Load trained caption model
-model = load_model(MODEL_FILENAME)
+# Load trained caption model with compatibility handling
+# The model was saved with older Keras that used 'batch_shape' instead of 'input_shape'
+from tensorflow.keras.layers import InputLayer as BaseInputLayer
+
+class CompatibleInputLayer(BaseInputLayer):
+    """InputLayer that accepts both batch_shape and input_shape for compatibility"""
+    @classmethod
+    def from_config(cls, config):
+        # Convert batch_shape to input_shape if needed (for older Keras models)
+        config = config.copy()  # Don't modify the original
+        if 'batch_shape' in config and 'input_shape' not in config:
+            batch_shape = config['batch_shape']
+            if batch_shape and len(batch_shape) > 1:
+                config['input_shape'] = tuple(batch_shape[1:])
+            # Remove batch_shape as it's not recognized in newer Keras
+            config.pop('batch_shape', None)
+        return super().from_config(config)
+
+# Try loading the model with compatibility layer
+try:
+    model = load_model(MODEL_FILENAME, compile=False, custom_objects={'InputLayer': CompatibleInputLayer}, safe_mode=False)
+except Exception as e:
+    print(f"Model load with custom InputLayer failed: {e}", file=sys.stderr)
+    # Fallback: try without custom objects
+    try:
+        model = load_model(MODEL_FILENAME, compile=False, safe_mode=False)
+    except Exception as e2:
+        print(f"Standard model load also failed: {e2}", file=sys.stderr)
+        raise
 
 # Load InceptionV3 feature extractor (weights auto-download on first run)
 base_model = InceptionV3(weights="imagenet")
