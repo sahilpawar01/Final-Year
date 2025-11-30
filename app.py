@@ -226,18 +226,56 @@ def patch_deserialization_functions():
 patch_deserialization_functions()
 
 # Create a proper DTypePolicy class for deserialization
-class DTypePolicyCompat:
-    """Compatibility class for DTypePolicy deserialization"""
-    def __init__(self, name='float32', **kwargs):
-        self.name = name
-    
-    @classmethod
-    def from_config(cls, config):
-        if isinstance(config, dict):
-            name = config.get('name', 'float32')
-        else:
-            name = str(config) if config else 'float32'
-        return cls(name=name)
+# Try to use the real DTypePolicy if available, otherwise create a compatibility class
+try:
+    from tensorflow.keras.mixed_precision import Policy as DTypePolicyCompat
+    print("Using TensorFlow DTypePolicy (Policy)", file=sys.stderr)
+except ImportError:
+    try:
+        from keras.dtype_policies import DTypePolicy as DTypePolicyCompat
+        print("Using Keras DTypePolicy", file=sys.stderr)
+    except ImportError:
+        # Fallback: Create a compatibility class with all required attributes
+        class DTypePolicyCompat:
+            """Compatibility class for DTypePolicy deserialization"""
+            def __init__(self, name='float32', **kwargs):
+                if isinstance(name, dict):
+                    # Handle config dict directly
+                    name = name.get('name', 'float32') if isinstance(name, dict) else 'float32'
+                
+                self._name = str(name) if name else 'float32'
+                # Parse name to get compute and variable dtypes
+                if self._name == "mixed_float16":
+                    self._compute_dtype = "float16"
+                    self._variable_dtype = "float32"
+                elif self._name == "mixed_bfloat16":
+                    self._compute_dtype = "bfloat16"
+                    self._variable_dtype = "float32"
+                else:
+                    # Default to the same dtype for both
+                    self._compute_dtype = self._name
+                    self._variable_dtype = self._name
+                
+                # Also set as direct attributes for compatibility
+                self.compute_dtype = self._compute_dtype
+                self.variable_dtype = self._variable_dtype
+            
+            @property
+            def name(self):
+                return self._name
+            
+            @classmethod
+            def from_config(cls, config):
+                if isinstance(config, dict):
+                    name = config.get('name', 'float32')
+                else:
+                    name = str(config) if config else 'float32'
+                return cls(name=name)
+            
+            def __repr__(self):
+                return f"<DTypePolicyCompat '{self._name}'>"
+        
+        print("Using custom DTypePolicyCompat class", file=sys.stderr)
 
 # Custom objects for loading the model
 custom_objects = {
