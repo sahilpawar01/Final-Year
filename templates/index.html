@@ -1,0 +1,147 @@
+<!-- templates/index.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Image Captioning</title>
+
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="bg-gradient">
+  <div class="container py-5">
+    <h1 class="display-4 text-center mb-4">Automatic Image Captioning</h1>
+
+    <div class="row justify-content-center">
+      <div class="col-md-8">
+        <div class="card shadow-sm">
+          <div class="card-body">
+            <form id="uploadForm">
+              <div class="mb-3">
+                <label for="imageInput" class="form-label">Select image to caption</label>
+                <input class="form-control" type="file" id="imageInput" accept="image/*" required>
+              </div>
+
+              <div class="d-grid gap-2 d-sm-flex justify-content-sm-center">
+                <button id="submitBtn" type="submit" class="btn btn-primary btn-lg">Generate Caption</button>
+                <button id="clearBtn" type="button" class="btn btn-outline-secondary btn-lg">Try Again</button>
+              </div>
+            </form>
+
+            <div id="preview" class="mt-4 text-center d-none">
+              <img id="previewImg" src="" class="img-fluid rounded" style="max-height:420px; object-fit:contain;">
+            </div>
+
+            <div id="loader" class="text-center mt-3 d-none">
+              <div class="spinner-border" role="status"></div>
+              <div class="mt-2">Generating caption...</div>
+            </div>
+
+            <div id="result" class="mt-4 text-center d-none">
+              <h3 class="text-muted">Predicted Caption</h3>
+              <div class="caption-box p-3 rounded mt-3">
+                <p id="captionText" class="lead mb-0"></p>
+              </div>
+            </div>
+
+            <div id="errorMsg" class="alert alert-danger mt-3 d-none" role="alert"></div>
+          </div>
+        </div>
+        <p class="text-center small text-muted mt-3">Model runs on the server. Image is sent temporarily for prediction and stored in server uploads.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap JS & dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script>
+    const form = document.getElementById('uploadForm');
+    const imageInput = document.getElementById('imageInput');
+    const preview = document.getElementById('preview');
+    const previewImg = document.getElementById('previewImg');
+    const submitBtn = document.getElementById('submitBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const loader = document.getElementById('loader');
+    const result = document.getElementById('result');
+    const captionText = document.getElementById('captionText');
+    const errorMsg = document.getElementById('errorMsg');
+
+    imageInput.addEventListener('change', () => {
+      errorMsg.classList.add('d-none');
+      if (!imageInput.files || !imageInput.files[0]) {
+        preview.classList.add('d-none');
+        return;
+      }
+      const file = imageInput.files[0];
+      const url = URL.createObjectURL(file);
+      previewImg.src = url;
+      preview.classList.remove('d-none');
+      result.classList.add('d-none');
+    });
+
+    clearBtn.addEventListener('click', () => {
+      imageInput.value = "";
+      previewImg.src = "";
+      preview.classList.add('d-none');
+      result.classList.add('d-none');
+      errorMsg.classList.add('d-none');
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorMsg.classList.add('d-none');
+      result.classList.add('d-none');
+
+      if (!imageInput.files || !imageInput.files[0]) {
+        errorMsg.textContent = "Please choose an image file.";
+        errorMsg.classList.remove('d-none');
+        return;
+      }
+
+      // show loader
+      loader.classList.remove('d-none');
+      submitBtn.disabled = true;
+      clearBtn.disabled = true;
+
+      const fd = new FormData();
+      fd.append('image', imageInput.files[0]);
+
+      try {
+        const res = await fetch('/caption', {
+          method: 'POST',
+          body: fd
+        });
+
+        const data = await res.json();
+        loader.classList.add('d-none');
+        submitBtn.disabled = false;
+        clearBtn.disabled = false;
+
+        if (!res.ok || data.error) {
+          errorMsg.textContent = data.error || 'Prediction failed';
+          errorMsg.classList.remove('d-none');
+          return;
+        }
+
+        // show result
+        captionText.textContent = data.caption;
+        result.classList.remove('d-none');
+
+        // show the server-saved image if you want (optional)
+        // previewImg.src = `/uploads/${data.filename}`;
+        // preview.classList.remove('d-none');
+      } catch (err) {
+        loader.classList.add('d-none');
+        submitBtn.disabled = false;
+        clearBtn.disabled = false;
+        errorMsg.textContent = err.message || 'An error occurred';
+        errorMsg.classList.remove('d-none');
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+/* static/style.css */
+body.bg-gradient {
+  background: linear-gradient(135deg, #c6f1ff 0%, #e0c6ff 100%);
+  min-height: 100vh;
+}
+
+h1.display-4 {
+  text-align: center;
+  text-shadow: 0 2px 6px rgba(0,0,0,0.12);
+}
+
+.caption-box {
+  background: rgba(255,255,255,0.96);
+  border-radius: 10px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.08);
+  margin: 0 auto;
+  max-width: 900px;
+}
+
+.lead {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
