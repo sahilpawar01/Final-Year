@@ -225,6 +225,110 @@ def patch_deserialization_functions():
 
 patch_deserialization_functions()
 
+# Patch functional model reconstruction to handle string input_data
+def patch_functional_reconstruction():
+    """Patch functional model reconstruction to handle string input_data in node_data"""
+    try:
+        from tensorflow.python.keras.engine import functional as tf_functional
+        import tensorflow.python.keras.utils.nest as nest
+        
+        # Create a compatibility wrapper for ListWrapper that handles strings
+        class CompatibleListWrapper:
+            """Wrapper that can handle both ListWrapper objects and strings"""
+            def __init__(self, data):
+                self._data = data
+            
+            def as_list(self):
+                if isinstance(self._data, str):
+                    # String format: assume it's a layer name, return [name, 0, 0]
+                    return [self._data, 0, 0]
+                elif hasattr(self._data, 'as_list'):
+                    # It's a real ListWrapper, call its as_list method
+                    return self._data.as_list()
+                elif isinstance(self._data, (list, tuple)):
+                    # Already a list
+                    return list(self._data)
+                else:
+                    # Fallback: wrap in list
+                    return [self._data, 0, 0]
+        
+        # Get the original reconstruct_from_config
+        original_reconstruct = tf_functional.reconstruct_from_config
+        
+        # Store original process_node if it exists in the closure
+        def patched_reconstruct_from_config(config, custom_objects=None, created_layers=None):
+            """Patched version that wraps process_node to handle strings"""
+            # We need to patch the inner process_node function
+            # This is tricky because it's defined inside reconstruct_from_config
+            # So we'll patch it by wrapping the entire reconstruction process
+            
+            # First, let's try to fix the config if it has string-based node data
+            if isinstance(config, dict) and 'layers' in config:
+                for layer_data in config['layers']:
+                    if isinstance(layer_data, dict) and 'inbound_nodes' in layer_data:
+                        inbound_nodes = layer_data['inbound_nodes']
+                        # The inbound_nodes should already be in the right format
+                        # The issue is during processing, not in the config
+            
+            # Patch ListWrapper class to handle strings
+            try:
+                from tensorflow.python.keras.utils.generic_utils import ListWrapper
+                original_list_wrapper_init = ListWrapper.__init__
+                original_list_wrapper_as_list = ListWrapper.as_list
+                
+                def patched_list_wrapper_init(self, seq=None):
+                    # If seq is a string, convert it to a list
+                    if isinstance(seq, str):
+                        seq = [seq, 0, 0]
+                    original_list_wrapper_init(self, seq)
+                
+                def patched_list_wrapper_as_list(self):
+                    # If the wrapped data is a string, return it as a list
+                    if hasattr(self, '_list') and isinstance(self._list, str):
+                        return [self._list, 0, 0]
+                    return original_list_wrapper_as_list(self)
+                
+                ListWrapper.__init__ = patched_list_wrapper_init
+                ListWrapper.as_list = patched_list_wrapper_as_list
+                print("Patched ListWrapper to handle strings", file=sys.stderr)
+            except (ImportError, AttributeError) as e:
+                print(f"Could not patch ListWrapper: {e}", file=sys.stderr)
+            
+            # Also patch nest.flatten to wrap strings
+            original_flatten = nest.flatten
+            
+            def patched_flatten(structure):
+                result = original_flatten(structure)
+                # Wrap any strings in CompatibleListWrapper
+                wrapped_result = []
+                for item in result:
+                    if isinstance(item, str):
+                        wrapped_result.append(CompatibleListWrapper(item))
+                    else:
+                        wrapped_result.append(item)
+                return wrapped_result
+            
+            # Temporarily replace nest.flatten
+            nest.flatten = patched_flatten
+            
+            try:
+                result = original_reconstruct(config, custom_objects, created_layers)
+            finally:
+                # Restore original
+                nest.flatten = original_flatten
+            
+            return result
+        
+        tf_functional.reconstruct_from_config = patched_reconstruct_from_config
+        print("Patched functional.reconstruct_from_config to handle string input_data", file=sys.stderr)
+        
+    except Exception as e:
+        print(f"Could not patch functional reconstruction: {e}", file=sys.stderr)
+        import traceback
+        print(traceback.format_exc(), file=sys.stderr)
+
+patch_functional_reconstruction()
+
 # Create a proper DTypePolicy class for deserialization
 # Try to use the real DTypePolicy if available, otherwise create a compatibility class
 try:
