@@ -65,6 +65,30 @@ except Exception as e:
 from tensorflow.keras.layers import InputLayer as BaseInputLayer, Embedding as BaseEmbedding
 from tensorflow.keras.utils import custom_object_scope
 from tensorflow.keras import backend as K
+import json
+
+# Monkey-patch the deserialization to fix configs before they reach layer constructors
+def fix_layer_config(config):
+    """Fix layer configs to handle old Keras formats"""
+    config = config.copy()
+    
+    # Fix InputLayer: convert batch_shape to input_shape
+    if 'batch_shape' in config and 'input_shape' not in config:
+        batch_shape = config['batch_shape']
+        if batch_shape and len(batch_shape) > 1:
+            config['input_shape'] = tuple(batch_shape[1:])
+        config.pop('batch_shape', None)
+    
+    # Fix Embedding: convert DTypePolicy dict to string
+    if 'dtype' in config and isinstance(config['dtype'], dict):
+        dtype_config = config['dtype']
+        if dtype_config.get('class_name') == 'DTypePolicy':
+            inner_config = dtype_config.get('config', {})
+            config['dtype'] = inner_config.get('name', 'float32')
+        elif isinstance(dtype_config, dict) and 'module' in dtype_config:
+            config['dtype'] = 'float32'  # Default fallback
+    
+    return config
 
 class CompatibleInputLayer(BaseInputLayer):
     """InputLayer that accepts both batch_shape and input_shape for compatibility"""
@@ -79,14 +103,7 @@ class CompatibleInputLayer(BaseInputLayer):
     
     @classmethod
     def from_config(cls, config):
-        # Convert batch_shape to input_shape if needed (for older Keras models)
-        config = config.copy()  # Don't modify the original
-        if 'batch_shape' in config and 'input_shape' not in config:
-            batch_shape = config['batch_shape']
-            if batch_shape and len(batch_shape) > 1:
-                config['input_shape'] = tuple(batch_shape[1:])
-            # Remove batch_shape as it's not recognized in newer Keras
-            config.pop('batch_shape', None)
+        config = fix_layer_config(config)
         return super().from_config(config)
 
 class CompatibleEmbedding(BaseEmbedding):
@@ -96,33 +113,38 @@ class CompatibleEmbedding(BaseEmbedding):
         if isinstance(dtype, dict):
             dtype_config = dtype
             if dtype_config.get('class_name') == 'DTypePolicy':
-                # Extract the actual dtype from the policy
                 inner_config = dtype_config.get('config', {})
                 dtype = inner_config.get('name', 'float32')
-            elif 'module' in dtype_config and 'keras' in dtype_config.get('module', ''):
-                # Try to get the dtype value
+            elif 'module' in dtype_config:
                 dtype = 'float32'  # Default fallback
         super().__init__(dtype=dtype, **kwargs)
     
     @classmethod
     def from_config(cls, config):
-        config = config.copy()
-        # Handle old dtype format - convert DTypePolicy to string
-        if 'dtype' in config and isinstance(config['dtype'], dict):
-            dtype_config = config['dtype']
-            if dtype_config.get('class_name') == 'DTypePolicy':
-                # Extract the actual dtype from the policy
-                inner_config = dtype_config.get('config', {})
-                config['dtype'] = inner_config.get('name', 'float32')
-            elif 'module' in dtype_config and 'keras' in dtype_config.get('module', ''):
-                # Try to get the dtype value
-                config['dtype'] = 'float32'  # Default fallback
+        config = fix_layer_config(config)
         return super().from_config(config)
+
+# Patch the deserialization function to fix configs globally
+try:
+    from tensorflow.keras.engine.base_layer import Layer
+    original_from_config = Layer.from_config
+    
+    @classmethod
+    def patched_from_config(cls, config, custom_objects=None):
+        # Fix the config before deserialization
+        if isinstance(config, dict):
+            config = fix_layer_config(config)
+        return original_from_config(config, custom_objects)
+    
+    Layer.from_config = patched_from_config
+except Exception as e:
+    print(f"Could not patch Layer.from_config: {e}", file=sys.stderr)
 
 # Custom objects for loading the model
 custom_objects = {
     'InputLayer': CompatibleInputLayer,
     'Embedding': CompatibleEmbedding,
+    'DTypePolicy': lambda **kwargs: 'float32',  # Dummy DTypePolicy handler
 }
 
 # Try loading the model with compatibility layers using custom_object_scope
@@ -136,9 +158,15 @@ except Exception as e:
         model = load_model(MODEL_FILENAME, compile=False, custom_objects=custom_objects)
     except Exception as e2:
         print(f"Model load with custom_objects parameter failed: {e2}", file=sys.stderr)
-        # Last resort: try without custom objects (will likely fail but worth trying)
+        # Last resort: try using h5py to manually fix and reload
         try:
-            model = load_model(MODEL_FILENAME, compile=False)
+            import h5py
+            # This is a complex workaround - for now, just raise with helpful message
+            raise RuntimeError(
+                f"Model loading failed due to version incompatibility. "
+                f"Please re-save the model using the same TensorFlow version as deployment (2.11.0), "
+                f"or provide the exact TF/Keras versions used during training so we can match them."
+            )
         except Exception as e3:
             print(f"All model loading attempts failed: {e3}", file=sys.stderr)
             raise
